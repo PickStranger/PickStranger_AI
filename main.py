@@ -5,7 +5,7 @@ from src import RBAPreprocessor, RBADetector
 
 
 def main():
-    print("=== OAuth2 이상 탐지 AI 학습 파이프라인 시작 ===")
+    print("main start")
 
     # 1. 가중치 파일을 저장할 폴더 준비
     os.makedirs("models", exist_ok=True)
@@ -27,21 +27,21 @@ def main():
     # 데이터가 적은 테스트 상황이므로 contamination(이상치 비율)을 20%로 임시 설정
     detector = RBADetector()
     # K-Fold 검증 실행 (10-Fold)
-    detector.evaluate_with_kfold(x_train, y_target, k=10)
+    detector.evaluate_with_kfold(x_train, y_target, k=5)
 
     # 검증이 끝난 후, 실서비스 배포용으로 전체 데이터를 다 넣고 최종 학습
     detector.train(x_train, y_target)
 
     # 5. 가중치 파일 저장 (실무 핵심!)
     # 모델 가중치 저장
-    detector.save_model("models/isolation_forest_v1.pkl")
+    detector.save_model("models/xgboost_v1.pkl")
 
     # ⚠️ 매우 중요: 전처리기(Scaler, Encoder)도 함께 저장해야 합니다.
     # 그래야 나중에 들어오는 새로운 로그도 똑같은 기준으로 수치화할 수 있습니다.
     joblib.dump(preprocessor, "models/preprocessor_v1.pkl")
     print("[*] 전처리기 가중치 파일 저장 완료: models/preprocessor_v1.pkl")
 
-    print("=== 파이프라인 실행 완료 ===")
+    print("pipeline finished")
 
 
 if __name__ == "__main__":
