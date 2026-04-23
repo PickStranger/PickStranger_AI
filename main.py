@@ -18,23 +18,26 @@ def main():
     raw_data = pd.read_csv(data_path)
 
     # 3. 데이터 전처리
-    print("[*] 데이터 전처리 진행 중...")
+    split_index = int(len(raw_data) * 0.8)
+
+    train_raw = raw_data.iloc[:split_index].copy()
+    test_raw = raw_data.iloc[split_index:].copy()
+
     preprocessor = RBAPreprocessor()
-    # 학습(fit)과 변환(transform)을 동시에 진행
-    x_train, y_target = preprocessor.fit_transform(raw_data)
 
-    # 4. AI 모델 학습
-    # 데이터가 적은 테스트 상황이므로 contamination(이상치 비율)을 20%로 임시 설정
+    x_train, y_train = preprocessor.fit_transform(train_raw)
+
+    y_test = test_raw[['Is Attack IP', 'Is Account Takeover']].copy()
+    x_test = preprocessor.transform(test_raw)
+
     detector = RBADetector()
-    # K-Fold 검증 실행 (10-Fold)
-    detector.evaluate_with_kfold(x_train, y_target, k=5)
+    detector.evaluate_with_kfold(x_train, y_train, k=5)
 
-    # 검증이 끝난 후, 실서비스 배포용으로 전체 데이터를 다 넣고 최종 학습
-    detector.train(x_train, y_target)
+    detector.train(x_train, y_train)
 
-    # 5. 가중치 파일 저장 (실무 핵심!)
-    # 모델 가중치 저장
-    detector.save_model("models/xgboost_v1.pkl")
+    detector.evaluate_test_set(x_test, y_test)
+
+    detector.save_model("models/xgboost_v1.json")
 
     # ⚠️ 매우 중요: 전처리기(Scaler, Encoder)도 함께 저장해야 합니다.
     # 그래야 나중에 들어오는 새로운 로그도 똑같은 기준으로 수치화할 수 있습니다.
