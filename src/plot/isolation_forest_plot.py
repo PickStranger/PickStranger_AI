@@ -58,5 +58,5 @@ def show_statistics(file_path):
         attack_rate = df['Is Attack IP'].mean() * 100
         print(f"🚨 공격/비정상 접속(Attack IP) 비율: {attack_rate:.2f}%")
 
-dataset_path = "./data/rba-dataset/rba-dataset.csv"
+dataset_path = "../../data/rba-dataset/rba-dataset.csv"
 show_statistics(dataset_path)
