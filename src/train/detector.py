@@ -115,6 +115,22 @@ class RBADetector:
         self.model.save_model(file_path)
         print(f"Model saved to: {file_path}")
 
+    def fine_tune(self, x_data: pd.DataFrame, y_data: pd.DataFrame, base_model_path: str):
+        """사전학습된 모델 위에 새 데이터로 트리를 추가(warm-start)."""
+        if base_model_path.endswith('.pkl'):
+            base_model_path = base_model_path.replace('.pkl', '.json')
+
+        y_labels = (
+            y_data['Is Attack IP'].astype(int)
+            if 'Is Attack IP' in y_data.columns
+            else y_data.iloc[:, 0].astype(int)
+        )
+
+        print(f"Fine-tuning from: {base_model_path}  (samples: {len(x_data):,})")
+        self.model.fit(x_data, y_labels, xgb_model=base_model_path)
+        self.is_trained = True
+        print("Fine-tuning finished.")
+
     def load_model(self, file_path: str):
         if file_path.endswith('.pkl'):
             file_path = file_path.replace('.pkl', '.json')
