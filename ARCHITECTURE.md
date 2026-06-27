@@ -16,7 +16,7 @@
 ```
 PickStranger_AI/
 ├── main.py                          # 사전학습 파이프라인 (RBA 공개 데이터셋)
-├── serve.py                         # FastAPI 서버 실행 진입점
+├── serve.py                         # gRPC 서버 실행 진입점
 ├── requirements.txt
 ├── data/
 │   └── events.db                    # 런타임에 자동 생성되는 SQLite 이벤트 DB
@@ -34,8 +34,10 @@ PickStranger_AI/
     │   ├── detector.py              # XGBoost 탐지기 (fine_tune 메서드 포함)
     │   └── retrain.py               # 날짜 파라미터 기반 백그라운드 재학습
     └── api/
-        ├── schemas.py               # Pydantic 요청·응답 모델
-        └── server.py                # FastAPI 엔드포인트
+        ├── rba_service.proto        # gRPC 서비스 명세 (proto3) ← 스키마 정의 파일
+        ├── rba_service_pb2.py       # protoc 자동 생성 — 메시지 클래스
+        ├── rba_service_pb2_grpc.py  # protoc 자동 생성 — 서비스 스텁
+        └── servicer.py              # gRPC Servicer 구현
 ```
 
 ---
@@ -46,10 +48,10 @@ PickStranger_AI/
 [클라이언트]
     │  OAuth2 성공 후 WebGL / 타임존 / IP 등 전송
     ▼
-[리버스 프록시]
-    │  POST /api/v1/predict
+[리버스 프록시]  (예: Nginx, Envoy — gRPC 브리지 역할)
+    │  gRPC — RBAService.Predict RPC  (HTTP/2)
     ▼
-[FastAPI 서버 — serve.py]
+[gRPC 서버 — serve.py, 기본 포트 :50051]
     │
     ├─ OAuthEventMapper        ←── 클라이언트 신호를 RBA 피처 컬럼으로 변환
     ├─ RBAPreprocessor.transform()  ←── Scaler / OrdinalEncoder 적용
@@ -57,22 +59,22 @@ PickStranger_AI/
     │
     ├─ EventStore.save_event() ←── SQLite에 이벤트 저장 (store_event=true)
     │
-    └─ 응답: { is_anomaly, risk_score, event_id }
+    └─ 응답: PredictResponse { is_anomaly, risk_score, event_id }
 
 [운영자 / 보안팀]
     │  공격 확인 후 라벨 부여
-    │  PATCH /api/v1/events/{id}/label
+    │  RBAService.LabelEvent RPC
     ▼
 [EventStore] — is_attack 컬럼 업데이트
 
 [스케줄러 / 운영자]
-    │  POST /api/v1/train { recent_days: 30 }
+    │  RBAService.TriggerTrain RPC
     ▼
 [RetrainManager]
     ├─ EventStore에서 라벨링된 이벤트 조회 (날짜 범위 or 최근 N일)
     ├─ XGBoost warm-start fine-tune (기존 모델 위에 트리 추가)
     ├─ models/xgboost_ft_{timestamp}.json 저장
-    └─ POST /api/v1/model/reload → 서버 재시작 없이 모델 교체
+    └─ RBAService.ReloadModel RPC → 서버 재시작 없이 모델 교체
 ```
 
 ---
@@ -95,136 +97,158 @@ PickStranger_AI/
 
 ---
 
-## API 엔드포인트
+## gRPC 서비스 명세
 
-### `GET /health`
+서비스 정의 파일: `src/api/rba_service.proto`
+
+### `RBAService.Health`
 
 서버 상태, 현재 활성 모델, 라벨링된 이벤트 수를 반환합니다.
 
-```json
-{
-  "status": "ok",
-  "active_model": "models/xgboost_v1.json",
-  "model_loaded": true,
-  "labeled_events": 342
-}
+**요청** `HealthRequest` — 필드 없음
+
+**응답** `HealthResponse`
+```
+status:         "ok"
+active_model:   "models/xgboost_v1.json"
+model_loaded:   true
+labeled_events: 342
 ```
 
 ---
 
-### `POST /api/v1/predict`
+### `RBAService.Predict`
 
 OAuth2 로그인 직후 호출합니다. 이상 여부와 위험 점수를 반환하고, 선택적으로 이벤트를 DB에 저장합니다.
 
-**요청**
-```json
-{
-  "user_id": "user_abc",
-  "ip": "1.2.3.4",
-  "country": "KR",
-  "region": "Seoul",
-  "city": "Seoul",
-  "asn": 12345,
-  "os_name": "Windows",
-  "os_version": "11",
-  "browser_name": "Chrome",
-  "browser_version": "120.0",
-  "device_type": "Desktop",
-  "timezone": "Asia/Seoul",
-  "timezone_offset": 540,
-  "webgl_renderer": "ANGLE (NVIDIA RTX 3080 Direct3D11)",
-  "webgl_vendor": "Google Inc. (NVIDIA)",
-  "login_timestamp": "2025-06-01T10:30:00",
-  "is_success": true,
-  "store_event": true
-}
+**요청** `PredictRequest`
+```
+user_id:          "user_abc"
+ip:               "1.2.3.4"
+country:          "KR"
+region:           "Seoul"
+city:             "Seoul"
+asn:              12345
+os_name:          "Windows"
+os_version:       "11"
+browser_name:     "Chrome"
+browser_version:  "120.0"
+device_type:      "Desktop"
+timezone:         "Asia/Seoul"
+timezone_offset:  540
+webgl_renderer:   "ANGLE (NVIDIA RTX 3080 Direct3D11)"
+webgl_vendor:     "Google Inc. (NVIDIA)"
+login_timestamp:  "2025-06-01T10:30:00"
+is_success:       true
+store_event:      true
 ```
 
-**응답**
-```json
-{
-  "is_anomaly": false,
-  "risk_score": 12.4,
-  "event_id": 101
-}
+**응답** `PredictResponse`
+```
+is_anomaly:  false
+risk_score:  12.4
+event_id:    101   // 0 = 저장하지 않음
 ```
 
 ---
 
-### `PATCH /api/v1/events/{event_id}/label`
+### `RBAService.LabelEvent`
 
 보안팀이 공격 여부를 확인한 후 라벨을 부여합니다. 이 라벨이 있어야 해당 이벤트가 재학습에 사용됩니다.
 
-**요청**
-```json
-{
-  "is_attack": true,
-  "is_account_takeover": false
-}
+**요청** `LabelRequest`
+```
+event_id:            101
+is_attack:           true
+is_account_takeover: false
+```
+
+**응답** `LabelResponse`
+```
+event_id: 101
+labeled:  true
 ```
 
 ---
 
-### `POST /api/v1/train`
+### `RBAService.TriggerTrain`
 
 백그라운드에서 재학습을 시작합니다. `recent_days` 또는 `start_date + end_date` 중 하나를 지정해야 합니다.
 
-**요청 예시 — 최근 30일**
-```json
-{
-  "recent_days": 30,
-  "fine_tune_trees": 50
-}
+**요청 예시 — 최근 30일** `TrainRequest`
+```
+recent_days:     30
+fine_tune_trees: 50
 ```
 
-**요청 예시 — 날짜 범위**
-```json
-{
-  "start_date": "2025-01-01T00:00:00",
-  "end_date": "2025-06-01T23:59:59",
-  "fine_tune_trees": 100
-}
+**요청 예시 — 날짜 범위** `TrainRequest`
+```
+start_date:      "2025-01-01T00:00:00"
+end_date:        "2025-06-01T23:59:59"
+fine_tune_trees: 100
 ```
 
-**응답**
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "pending",
-  "message": "재학습 작업이 백그라운드에서 시작되었습니다."
-}
+**응답** `TrainResponse`
+```
+job_id:  "550e8400-e29b-41d4-a716-446655440000"
+status:  "pending"
+message: "재학습 작업이 백그라운드에서 시작되었습니다."
 ```
 
 ---
 
-### `GET /api/v1/train/{job_id}`
+### `RBAService.GetTrainStatus`
 
 재학습 작업의 진행 상태를 확인합니다.
 
-**응답 (완료 시)**
-```json
-{
-  "job_id": "550e8400-...",
-  "status": "done",
-  "started_at": "2025-06-01T12:00:00",
-  "finished_at": "2025-06-01T12:03:42",
-  "result": {
-    "samples": 512,
-    "added_trees": 50,
-    "new_model_path": "models/xgboost_ft_20250601_120342.json"
-  },
-  "error": null
-}
+**요청** `TrainStatusRequest`
+```
+job_id: "550e8400-e29b-41d4-a716-446655440000"
+```
+
+**응답 (완료 시)** `TrainStatusResponse`
+```
+job_id:         "550e8400-..."
+status:         "done"
+started_at:     "2025-06-01T12:00:00"
+finished_at:    "2025-06-01T12:03:42"
+samples:        512
+added_trees:    50
+new_model_path: "models/xgboost_ft_20250601_120342.json"
+error:          ""
 ```
 
 ---
 
-### `POST /api/v1/model/reload`
+### `RBAService.ListJobs`
+
+등록된 모든 재학습 작업 목록을 반환합니다.
+
+**요청** `ListJobsRequest` — 필드 없음
+
+**응답** `ListJobsResponse`
+```
+jobs: [
+  { job_id, status, started_at, finished_at },
+  ...
+]
+```
+
+---
+
+### `RBAService.ReloadModel`
 
 서버 재시작 없이 활성 모델을 교체합니다.
 
+**요청** `ReloadRequest`
 ```
-POST /api/v1/model/reload?model_path=models/xgboost_ft_20250601_120342.json
+model_path: "models/xgboost_ft_20250601_120342.json"
+```
+
+**응답** `ReloadResponse`
+```
+status:       "reloaded"
+active_model: "models/xgboost_ft_20250601_120342.json"
 ```
 
 ---
@@ -255,26 +279,31 @@ fine-tune (n_estimators=50 트리 추가)
 # 의존성 설치
 pip install -r requirements.txt
 
+# proto 코드 생성 (최초 1회, proto 변경 시 재실행)
+python -m grpc_tools.protoc \
+  -I src/api \
+  --python_out=src/api \
+  --grpc_python_out=src/api \
+  src/api/rba_service.proto
+
 # 사전학습 (최초 1회)
 python main.py
 
-# API 서버 실행
+# gRPC 서버 실행
 python serve.py
-# 또는
-uvicorn src.api.server:app --host 0.0.0.0 --port 8000
 ```
 
-환경 변수로 모델 경로를 오버라이드할 수 있습니다.
+환경 변수로 포트·모델 경로를 오버라이드할 수 있습니다.
 
 ```bash
-MODEL_PATH=models/xgboost_ft_20250601.json python serve.py
+GRPC_PORT=50051 MODEL_PATH=models/xgboost_ft_20250601.json python serve.py
 ```
 
 ---
 
 ## 주기적 재학습 권장 절차
 
-1. 운영자가 보안 이벤트를 확인한 뒤 `PATCH /label` 로 라벨 부여
-2. 월 1회 또는 라벨 이벤트가 일정 수 이상 누적되면 `POST /train` 호출
-3. `GET /train/{job_id}` 로 완료 확인
-4. `POST /model/reload` 로 새 모델 즉시 적용
+1. 운영자가 보안 이벤트를 확인한 뒤 `LabelEvent` RPC로 라벨 부여
+2. 월 1회 또는 라벨 이벤트가 일정 수 이상 누적되면 `TriggerTrain` RPC 호출
+3. `GetTrainStatus` RPC로 완료 확인
+4. `ReloadModel` RPC로 새 모델 즉시 적용
