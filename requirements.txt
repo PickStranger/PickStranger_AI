@@ -1,0 +1,10 @@
+pandas~=3.0.2
+scikit-learn~=1.8.0
+joblib
+numpy
+xgboost
+matplotlib
+seaborn
+grpcio>=1.64.0
+grpcio-tools>=1.64.0
+protobuf>=5.0.0

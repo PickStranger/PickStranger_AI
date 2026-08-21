@@ -1,0 +1,9 @@
+# 서빙(gRPC 추론) 전용 의존성 — matplotlib/seaborn/grpcio-tools 제외
+# 학습·플롯용 전체 목록은 requirements.txt 참고
+pandas~=3.0.2
+scikit-learn~=1.8.0
+joblib
+numpy
+xgboost
+grpcio>=1.64.0
+protobuf>=5.0.0
